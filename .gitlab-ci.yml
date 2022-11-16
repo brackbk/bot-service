@@ -1,0 +1,126 @@
+image: gitlab/dind
+
+# Use the OverlayFS driver for improved performance.
+variables:
+  DOCKER_DRIVER: overlay
+  DOCKER_TLS_CERTDIR: ""
+  DOCKER_HOST: tcp://docker:2375
+  AWS_DEFAULT_REGION: sa-east-1
+
+stages:
+  - test
+  - build
+  - deploy-staging
+  - deploy-production
+
+cache:
+  paths:
+    - node_modules/
+
+test:
+  image: nikolaik/python-nodejs:python3.9-nodejs14
+  stage: test
+  script:
+    - npm install
+    # - npm run test
+  only:
+   - development
+   - production
+
+build:
+  image: 
+    name: amazon/aws-cli
+    entrypoint: [""]
+  stage: build
+  services:
+    - docker:dind
+  dependencies:
+    - test
+  before_script:
+    - amazon-linux-extras install docker
+    - aws --version
+    - docker --version
+  script:
+    - if [ "$CI_COMMIT_REF_NAME" == "development" ]; then (echo "$ENV_STAGING" > .env.sample); else (echo "$ENV_PRODUCTION" > .env.sample); fi
+    - if [ "$CI_COMMIT_REF_NAME" == "development" ]; then (echo "$ENV_STAGING" > .env); else (echo "$ENV_PRODUCTION" > .env); fi
+    - cat .env
+    - aws ecr get-login-password | docker login --username AWS --password-stdin 063354147251.dkr.ecr.us-east-1.amazonaws.com
+    - docker build -t 063354147251.dkr.ecr.us-east-1.amazonaws.com/$PROJECT_NAME:$CI_COMMIT_SHA .
+    - docker push 063354147251.dkr.ecr.us-east-1.amazonaws.com/$PROJECT_NAME:$CI_COMMIT_SHA
+  only:
+   - development
+   - production
+
+deploy-staging:
+  image: nikolaik/python-nodejs:python3.9-nodejs14
+  stage: deploy-staging
+  dependencies:
+    - test
+    - build
+  script:
+    - curl "https://s3.amazonaws.com/aws-cli/awscli-bundle.zip" -o "awscli-bundle.zip"
+    - unzip awscli-bundle.zip
+    - ./awscli-bundle/install -i /usr/local/aws -b /usr/local/bin/aws
+    - aws configure set default.region us-east-1
+    - npm install -g cfn-create-or-update
+    - aws cloudformation validate-template --template-url https://tabletalks-cloudformation.s3.amazonaws.com/$PROJECT_NAME.yaml
+    - cfn-create-or-update
+      --stack-name $PROJECT_NAME2
+      --region us-east-1
+      --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
+      --template-url https://tabletalks-cloudformation.s3.amazonaws.com/$PROJECT_NAME.yaml
+      --parameters ParameterKey=imagemFinal,ParameterValue=063354147251.dkr.ecr.us-east-1.amazonaws.com/$PROJECT_NAME:$CI_COMMIT_SHA
+      ParameterKey=nameContainer,ParameterValue=container-$PROJECT_NAME2
+      ParameterKey=nameService,ParameterValue=service-$PROJECT_NAME2
+      ParameterKey=nameApplication,ParameterValue=application-$PROJECT_NAME2
+      ParameterKey=clusterARN,ParameterValue=arn:aws:ecs:us-east-1:063354147251:cluster/ecs-staging
+      ParameterKey=clusterName,ParameterValue=ecs-staging
+      ParameterKey=loadBalancerARN,ParameterValue=arn:aws:elasticloadbalancing:us-east-1:063354147251:listener/app/ecs-alb-staging/768fdd3794ac175f/319bd6d556193117
+      ParameterKey=CONFIGHostEndpoint,ParameterValue=stg-automation-bot.cyprobot.com
+      ParameterKey=CONFIGPriority,ParameterValue=5
+      ParameterKey=MemoryCustom,ParameterValue=0.5GB
+      ParameterKey=CPUCustom,ParameterValue=256
+      ParameterKey=VPCId,ParameterValue=vpc-094951d87f5cb016a
+      ParameterKey=AlarmNameIn,ParameterValue="Alarm +90% $PROJECT_NAME2"
+      ParameterKey=AlarmNameOut,ParameterValue="Alarm -70% $PROJECT_NAME2"
+      ParameterKey=SubnetA,ParameterValue=subnet-08688bea4e5664bb4
+      ParameterKey=SubnetB,ParameterValue=subnet-0830d945f3f0289b8
+  only:
+   - development
+
+deploy-production:
+  image: nikolaik/python-nodejs:python3.9-nodejs14
+  stage: deploy-production
+  dependencies:
+    - test
+    - build
+  script:
+    - curl "https://s3.amazonaws.com/aws-cli/awscli-bundle.zip" -o "awscli-bundle.zip"
+    - unzip awscli-bundle.zip
+    - ./awscli-bundle/install -i /usr/local/aws -b /usr/local/bin/aws
+    - aws configure set default.region us-east-1
+    - npm install -g cfn-create-or-update
+    - aws cloudformation validate-template --template-url https://tabletalks-cloudformation.s3.amazonaws.com/$PROJECT_NAME.yaml
+    - cfn-create-or-update
+      --stack-name prod-$PROJECT_NAME2
+      --region us-east-1
+      --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
+      --template-url https://tabletalks-cloudformation.s3.amazonaws.com/$PROJECT_NAME.yaml
+      --parameters ParameterKey=imagemFinal,ParameterValue=063354147251.dkr.ecr.us-east-1.amazonaws.com/$PROJECT_NAME:$CI_COMMIT_SHA
+      ParameterKey=nameContainer,ParameterValue=container-prod-$PROJECT_NAME2
+      ParameterKey=nameService,ParameterValue=service-prod-$PROJECT_NAME2
+      ParameterKey=nameApplication,ParameterValue=application-prod-$PROJECT_NAME2
+      ParameterKey=clusterARN,ParameterValue=arn:aws:ecs:us-east-1:063354147251:cluster/ecs-production
+      ParameterKey=clusterName,ParameterValue=ecs-production
+      ParameterKey=loadBalancerARN,ParameterValue=arn:aws:elasticloadbalancing:us-east-1:063354147251:listener/app/ecs-alb-production/7613307c618871e1/d5e53ccc2fc65817
+      ParameterKey=CONFIGHostEndpoint,ParameterValue=automation-bot.cyprobot.com
+      ParameterKey=CONFIGPriority,ParameterValue=5
+      ParameterKey=MemoryCustom,ParameterValue=1.0GB
+      ParameterKey=CPUCustom,ParameterValue=512
+      ParameterKey=VPCId,ParameterValue=vpc-0012b34d4e9e3dd47
+      ParameterKey=AlarmNameIn,ParameterValue="Alarm +90% prod-$PROJECT_NAME2"
+      ParameterKey=AlarmNameOut,ParameterValue="Alarm -70% prod-$PROJECT_NAME2"
+      ParameterKey=SubnetA,ParameterValue=subnet-05e67936d442e1638
+      ParameterKey=SubnetB,ParameterValue=subnet-00a60075267b34a2c
+  only:
+   - production
